@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(thiserror::Error, Debug)]
@@ -14,6 +15,8 @@ pub enum ZfsError {
     UnexpectedStateForMount(String),
     #[error("Command to check whether dataset {0} is mounted failed: {1}")]
     IsMountedCheckCallFailed(String, String),
+    #[error("Command to list datasets mount points failed: {0}")]
+    ListDatasetsMountPointsCallFailed(String),
     #[error(
         "Command returned unexpected state for key-loaded, other than 'true' and 'false' and '-'"
     )]
@@ -360,7 +363,7 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
         .arg("list")
         .arg("-H") // No table header
         .arg("-o")
-        .arg("name,mounted") // Only show two columns, dataset name and whether key is available
+        .arg("name,mounted") // Only show two columns, dataset name and whether dataset is mounted
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -413,11 +416,58 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
     }
 }
 
+pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsError> {
+    // Create a command to run zfs load-key
+    let mut child = Command::new("zfs")
+        .arg("list")
+        .arg("-H") // No table header
+        .arg("-o")
+        .arg("name,mountpoint") // Only show two columns, dataset name and mountpoint
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ZfsError::ListDatasetsMountPointsCallFailed(e.to_string()))?;
+
+    // Capture the stdout handle of the child process
+    let mut stdout = child.stdout.take().expect("Failed to capture stdout");
+    let mut stderr = child.stderr.take().expect("Failed to capture stderr");
+
+    // Read stdout/stderr to a string
+    let mut stdout_string = String::new();
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+    let mut stderr_string = String::new();
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+
+    // Wait for the zfs command to complete
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+
+    // Check if the command was successful
+    if status.success() {
+        let lines = stdout_string.lines();
+        let datasets_results = lines
+            .into_iter()
+            .map(|l| l.split_whitespace().collect::<Vec<_>>())
+            .filter(|v| v.len() >= 2)
+            .map(|v| (v[0].to_string(), PathBuf::from(v[1])))
+            .collect::<BTreeMap<String, PathBuf>>();
+        Ok(datasets_results)
+    } else {
+        Err(ZfsError::ListDatasetsMountPointsCallFailed(stderr_string))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
-        zfs_is_dataset_mounted, zfs_is_key_loaded, zfs_load_key, zfs_mount_dataset, zfs_unload_key,
-        zfs_unmount_dataset,
+        zfs_is_dataset_mounted, zfs_is_key_loaded, zfs_list_datasets_mountpoints, zfs_load_key,
+        zfs_mount_dataset, zfs_unload_key, zfs_unmount_dataset,
     };
 
     #[test]
@@ -426,6 +476,7 @@ mod tests {
 
         let dataset_name = "SamRandomPool/EncryptedDataset1";
         let passphrase = "abcdefghijklmnop";
+        let mount_point = "/SamRandomPoolEncryptedDS1";
 
         if hostname.to_ascii_lowercase() == "pitests" {
             // Try with a non-existent database
@@ -451,6 +502,12 @@ mod tests {
 
             zfs_unload_key(dataset_name).unwrap();
             assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(false));
+
+            let mount_points = zfs_list_datasets_mountpoints().unwrap();
+            assert_eq!(
+                mount_points.get(dataset_name).unwrap().to_string_lossy(),
+                mount_point,
+            );
         } else {
             println!("WARNING: No tests were run. Hostname not known.");
         }
