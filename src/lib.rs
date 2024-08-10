@@ -472,13 +472,13 @@ mod tests {
 
     #[test]
     fn basic() {
-        let hostname = hostname::get().unwrap();
-
+        // Feel free to update these entries to your machine's entries to test
+        let hostname = "pitests";
         let dataset_name = "SamRandomPool/EncryptedDataset1";
         let passphrase = "abcdefghijklmnop";
         let mount_point = "/SamRandomPoolEncryptedDS1";
 
-        if hostname.to_ascii_lowercase() == "pitests" {
+        if hostname::get().unwrap() == hostname {
             // Try with a non-existent database
             assert_eq!(zfs_is_key_loaded("some_random_stuff").unwrap(), None);
 
@@ -509,7 +509,9 @@ mod tests {
                 mount_point,
             );
         } else {
-            println!("WARNING: No tests were run. Hostname not known.");
+            let err = "WARNING: No tests were run. Update the tests to test on your machine.";
+            println!("{}", err);
+            eprintln!("{}", err);
         }
     }
 }
