@@ -13,7 +13,7 @@ pub enum ZfsError {
     #[error("Command returned unexpected state for mount, other than 'yes' and 'no': {0}")]
     UnexpectedStateForMount(String),
     #[error("Command to check whether dataset {0} is mounted failed: {1}")]
-    MountedCheckCallFailed(String, String),
+    IsMountedCheckCallFailed(String, String),
     #[error(
         "Command returned unexpected state for key-loaded, other than 'true' and 'false' and '-'"
     )]
@@ -61,7 +61,7 @@ pub fn zfs_load_key(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::LoadKeyCmdFailed(dataset.to_string(), e.to_string()))?;
 
     // Get the stdin of the zfs command
     if let Some(mut stdin) = child.stdin.as_mut() {
@@ -128,7 +128,7 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::UnloadKeyCmdFailed(dataset.to_string(), e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -193,7 +193,7 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::MountCmdFailed(dataset.to_string(), e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -247,7 +247,7 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::UnmountCmdFailed(dataset.to_string(), e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -298,7 +298,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::KeyLoadedCheckFailed(dataset.to_string(), e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -365,7 +365,7 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        .map_err(|e| ZfsError::IsMountedCheckCallFailed(dataset.to_string(), e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -406,7 +406,7 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
             None => Ok(None),
         }
     } else {
-        Err(ZfsError::MountedCheckCallFailed(
+        Err(ZfsError::IsMountedCheckCallFailed(
             dataset.to_string(),
             stderr_string,
         ))
