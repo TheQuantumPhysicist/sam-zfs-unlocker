@@ -4,6 +4,7 @@
         "abcdefghijklmnop",
         "keystatus",
         "mountpoint",
-        "pitests"
+        "pitests",
+        "unlocker"
     ],
 }
