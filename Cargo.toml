@@ -1,7 +1,10 @@
 [package]
-name = "zfs-unlocker"
+name = "sam-zfs-unlocker"
+description = "A simple library for controlling encrypted ZFS pool datasets"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/TheQuantumPhysicist/sam-zfs-unlocker"
+license = "MIT"
 
 [dependencies]
 thiserror = "1.0"
