@@ -4,6 +4,34 @@ use std::io::Read;
 use std::io::Write;
 use std::process::Command;
 
+#[derive(thiserror::Error, Debug)]
+pub enum ZfsError {
+    #[error("System error: {0}")]
+    SystemError(String),
+    #[error("Dataset {0} not found")]
+    DatasetNotFound(String),
+    #[error("Command returned unexpected state for mount, other than 'yes' and 'no': {0}")]
+    UnexpectedStateForMount(String),
+    #[error("Command to check whether dataset {0} is mounted failed: {1}")]
+    MountedCheckCallFailed(String, String),
+    #[error(
+        "Command returned unexpected state for key-loaded, other than 'true' and 'false' and '-'"
+    )]
+    UnexpectedStateForKeyLoaded(String),
+    #[error("Command to check whether key for dataset {0} is loaded failed: {1}")]
+    KeyLoadedCheckFailed(String, String),
+    #[error("Load key command for dataset {0} failed: {1}")]
+    LoadKeyCmdFailed(String, String),
+    #[error("Unload key command for dataset {0} failed: {1}")]
+    UnloadKeyCmdFailed(String, String),
+    #[error("Key must be loaded before mount for dataset {0}")]
+    KeyNotLoadedForMount(String),
+    #[error("Mount command for dataset {0} failed: {1}")]
+    MountCmdFailed(String, String),
+    #[error("Unmount command for dataset {0} failed: {1}")]
+    UnmountCmdFailed(String, String),
+}
+
 /// Attempts to load-key for ZFS dataset
 /// Returns: Ok(()) if the key is successfully loaded OR already loaded
 /// Returns: Error if dataset not found or some other system error occurred.
@@ -11,7 +39,7 @@ use std::process::Command;
 pub fn zfs_load_key(
     zfs_dataset: impl AsRef<str>,
     passphrase: impl AsRef<str>,
-) -> anyhow::Result<()> {
+) -> Result<(), ZfsError> {
     let passphrase = passphrase.as_ref();
     let dataset = zfs_dataset.as_ref();
 
@@ -20,7 +48,7 @@ pub fn zfs_load_key(
             true => return Ok(()),
             false => (),
         },
-        None => return Err(anyhow::anyhow!("ZFS dataset {dataset} not found.")),
+        None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
     // Create a command to run zfs load-key
@@ -32,14 +60,17 @@ pub fn zfs_load_key(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Get the stdin of the zfs command
     if let Some(mut stdin) = child.stdin.as_mut() {
         // Write the key to stdin
         let mut writer = BufWriter::new(&mut stdin);
-        writeln!(writer, "{}", passphrase)?;
-        writer.flush()?;
+        writeln!(writer, "{}", passphrase).map_err(|e| ZfsError::SystemError(e.to_string()))?;
+        writer
+            .flush()
+            .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     }
 
     // Capture the stdout handle of the child process
@@ -48,20 +79,26 @@ pub fn zfs_load_key(
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to load ZFS key. Error: {}",
-            stderr_string
+        Err(ZfsError::LoadKeyCmdFailed(
+            dataset.to_string(),
+            stderr_string,
         ))
     }
 }
@@ -70,7 +107,7 @@ pub fn zfs_load_key(
 /// Returns: Ok(()) if the key is successfully unloaded OR already unloaded
 /// Returns: Error if dataset not found or some other system error occurred.
 /// The command `zfs unload-key <dataset-name>` should be authorized with visudo.
-pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
+pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
     let dataset = zfs_dataset.as_ref();
 
     match zfs_is_key_loaded(dataset)? {
@@ -78,7 +115,7 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
             true => (),
             false => return Ok(()),
         },
-        None => return Err(anyhow::anyhow!("ZFS dataset {dataset} not found.")),
+        None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
     // Create a command to run zfs load-key
@@ -90,7 +127,8 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -98,20 +136,26 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to unload ZFS key. Error: {}",
-            stderr_string
+        Err(ZfsError::UnloadKeyCmdFailed(
+            dataset.to_string(),
+            stderr_string,
         ))
     }
 }
@@ -120,23 +164,15 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 /// Returns Ok(()) if successfully mounted or already mounted
 /// Returns Err otherwise
 /// The command `zfs mount <dataset-name>` should be authorized with visudo.
-pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
+pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
     let dataset = zfs_dataset.as_ref();
 
     match zfs_is_key_loaded(dataset)? {
         Some(loaded) => match loaded {
             true => (),
-            false => {
-                return Err(anyhow::anyhow!(
-                    "Cannot mount encrypted dataset. Key not loaded."
-                ))
-            }
+            false => return Err(ZfsError::KeyNotLoadedForMount(dataset.to_string())),
         },
-        None => {
-            return Err(anyhow::anyhow!(
-                "ZFS dataset {dataset} not found  [when checking key-loaded]."
-            ))
-        }
+        None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
     match zfs_is_dataset_mounted(dataset)? {
@@ -144,11 +180,7 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
             true => return Ok(()),
             false => (),
         },
-        None => {
-            return Err(anyhow::anyhow!(
-                "ZFS dataset {dataset} not found [when checking mounted]."
-            ))
-        }
+        None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
     // Create a command to run zfs load-key
@@ -160,7 +192,8 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -168,21 +201,24 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to mount ZFS dataset. Error: {}",
-            stderr_string
-        ))
+        Err(ZfsError::MountCmdFailed(dataset.to_string(), stderr_string))
     }
 }
 
@@ -190,47 +226,28 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 /// Returns: Ok(()) on success or if is already mounted
 /// Returns: Err otherwise.
 /// The command `zfs unmount <dataset-name>` should be authorized with visudo.
-pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
+pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
     let dataset = zfs_dataset.as_ref();
-
-    match zfs_is_key_loaded(dataset)? {
-        Some(loaded) => match loaded {
-            true => (),
-            false => {
-                return Err(anyhow::anyhow!(
-                    "Cannot mount encrypted dataset. Key not loaded."
-                ))
-            }
-        },
-        None => {
-            return Err(anyhow::anyhow!(
-                "ZFS dataset {dataset} not found  [when checking key-loaded]."
-            ))
-        }
-    }
 
     match zfs_is_dataset_mounted(dataset)? {
         Some(mounted) => match mounted {
             true => (),
             false => return Ok(()),
         },
-        None => {
-            return Err(anyhow::anyhow!(
-                "ZFS dataset {dataset} not found [when checking mounted]."
-            ))
-        }
+        None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
     // Create a command to run zfs load-key
     let mut child = Command::new("sudo")
         .arg("-n") // sudo isn't interactive
         .arg("zfs")
-        .arg("unmount")
+        .arg("umount")
         .arg(dataset)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -238,20 +255,26 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to mount ZFS dataset. Error: {}",
-            stderr_string
+        Err(ZfsError::UnmountCmdFailed(
+            dataset.to_string(),
+            stderr_string,
         ))
     }
 }
@@ -261,7 +284,7 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> anyhow::Result<()> {
 /// Returns: Some(false) if key is not loaded
 /// Returns: None if the dataset is not found
 /// Otherwise, an error is returned
-pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<bool>> {
+pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = zfs_dataset.as_ref();
 
     // Create a command to run zfs load-key
@@ -274,7 +297,8 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -282,12 +306,18 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
@@ -303,17 +333,16 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<
                 "available" => Ok(Some(true)),
                 "unavailable" => Ok(Some(false)),
                 "-" => Ok(Some(true)),
-                _ => Err(anyhow::anyhow!(
-                    "Unknown result returned by ZFS dataset query for key status: `{}`",
-                    is_key_available
+                _ => Err(ZfsError::UnexpectedStateForKeyLoaded(
+                    is_key_available.to_string(),
                 )),
             },
             None => Ok(None),
         }
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to check ZFS dataset status: {}",
-            stderr_string
+        Err(ZfsError::KeyLoadedCheckFailed(
+            dataset.to_string(),
+            stderr_string,
         ))
     }
 }
@@ -323,7 +352,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<
 /// Returns: Some(false) if key is not loaded
 /// Returns: None if the dataset is not found
 /// Otherwise, an error is returned
-pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Option<bool>> {
+pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = zfs_dataset.as_ref();
 
     // Create a command to run zfs load-key
@@ -335,7 +364,8 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Op
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Capture the stdout handle of the child process
     let mut stdout = child.stdout.take().expect("Failed to capture stdout");
@@ -343,12 +373,18 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Op
 
     // Read stdout/stderr to a string
     let mut stdout_string = String::new();
-    stdout.read_to_string(&mut stdout_string)?;
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
     let mut stderr_string = String::new();
-    stderr.read_to_string(&mut stderr_string)?;
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Wait for the zfs command to complete
-    let status = child.wait()?;
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
 
     // Check if the command was successful
     if status.success() {
@@ -363,17 +399,16 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> anyhow::Result<Op
             Some(is_key_available) => match *is_key_available {
                 "yes" => Ok(Some(true)),
                 "no" => Ok(Some(false)),
-                _ => Err(anyhow::anyhow!(
-                    "Unknown result returned by ZFS dataset query for mounted status: `{}`",
-                    is_key_available
+                _ => Err(ZfsError::UnexpectedStateForMount(
+                    is_key_available.to_string(),
                 )),
             },
             None => Ok(None),
         }
     } else {
-        Err(anyhow::anyhow!(
-            "Failed to check ZFS dataset mounted status: {}",
-            stderr_string
+        Err(ZfsError::MountedCheckCallFailed(
+            dataset.to_string(),
+            stderr_string,
         ))
     }
 }
