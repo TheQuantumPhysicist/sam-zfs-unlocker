@@ -1,0 +1,10 @@
+[package]
+name = "zfs-unlocker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+
+[dev-dependencies]
+hostname = "0.4"
