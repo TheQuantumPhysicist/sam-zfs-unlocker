@@ -33,6 +33,22 @@ pub enum ZfsError {
     MountCmdFailed(String, String),
     #[error("Unmount command for dataset {0} failed: {1}")]
     UnmountCmdFailed(String, String),
+    #[error("Dataset name is invalid: {0}")]
+    DatasetNameIsInvalid(String),
+}
+
+fn check_and_sanitize_zfs_dataset_name(zfs_dataset: impl AsRef<str>) -> Result<String, ZfsError> {
+    let dataset = zfs_dataset.as_ref();
+
+    if !dataset.split('/').all(|part| {
+        part.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+            && !part.is_empty()
+    }) {
+        Err(ZfsError::DatasetNameIsInvalid(dataset.to_string()))
+    } else {
+        Ok(dataset.trim().to_string())
+    }
 }
 
 /// Attempts to load-key for ZFS dataset
@@ -44,9 +60,9 @@ pub fn zfs_load_key(
     passphrase: impl AsRef<str>,
 ) -> Result<(), ZfsError> {
     let passphrase = passphrase.as_ref();
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
-    match zfs_is_key_loaded(dataset)? {
+    match zfs_is_key_loaded(&dataset)? {
         Some(loaded) => match loaded {
             true => return Ok(()),
             false => (),
@@ -59,7 +75,7 @@ pub fn zfs_load_key(
         .arg("-n") // sudo isn't interactive
         .arg("zfs")
         .arg("load-key")
-        .arg(dataset)
+        .arg(&dataset)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -111,9 +127,9 @@ pub fn zfs_load_key(
 /// Returns: Error if dataset not found or some other system error occurred.
 /// The command `zfs unload-key <dataset-name>` should be authorized with visudo.
 pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
-    match zfs_is_key_loaded(dataset)? {
+    match zfs_is_key_loaded(&dataset)? {
         Some(loaded) => match loaded {
             true => (),
             false => return Ok(()),
@@ -126,7 +142,7 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         .arg("-n") // sudo isn't interactive
         .arg("zfs")
         .arg("unload-key")
-        .arg(dataset)
+        .arg(&dataset)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -168,9 +184,9 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
 /// Returns Err otherwise
 /// The command `zfs mount <dataset-name>` should be authorized with visudo.
 pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
-    match zfs_is_key_loaded(dataset)? {
+    match zfs_is_key_loaded(&dataset)? {
         Some(loaded) => match loaded {
             true => (),
             false => return Err(ZfsError::KeyNotLoadedForMount(dataset.to_string())),
@@ -178,7 +194,7 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
-    match zfs_is_dataset_mounted(dataset)? {
+    match zfs_is_dataset_mounted(&dataset)? {
         Some(mounted) => match mounted {
             true => return Ok(()),
             false => (),
@@ -191,7 +207,7 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         .arg("-n") // sudo isn't interactive
         .arg("zfs")
         .arg("mount")
-        .arg(dataset)
+        .arg(&dataset)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -230,9 +246,9 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
 /// Returns: Err otherwise.
 /// The command `zfs unmount <dataset-name>` should be authorized with visudo.
 pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
-    match zfs_is_dataset_mounted(dataset)? {
+    match zfs_is_dataset_mounted(&dataset)? {
         Some(mounted) => match mounted {
             true => (),
             false => return Ok(()),
@@ -245,7 +261,7 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
         .arg("-n") // sudo isn't interactive
         .arg("zfs")
         .arg("umount")
-        .arg(dataset)
+        .arg(&dataset)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -288,7 +304,7 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
 /// Returns: None if the dataset is not found
 /// Otherwise, an error is returned
 pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
     // Create a command to run zfs load-key
     let mut child = Command::new("zfs")
@@ -331,7 +347,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
             .filter(|v| v.len() >= 2)
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
-        match datasets_results.get(dataset) {
+        match datasets_results.get(&&*dataset) {
             Some(is_key_available) => match *is_key_available {
                 "available" => Ok(Some(true)),
                 "unavailable" => Ok(Some(false)),
@@ -356,7 +372,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
 /// Returns: None if the dataset is not found
 /// Otherwise, an error is returned
 pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
     // Create a command to run zfs load-key
     let mut child = Command::new("zfs")
@@ -398,7 +414,7 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
             .filter(|v| v.len() >= 2)
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
-        match datasets_results.get(dataset) {
+        match datasets_results.get(&&*dataset) {
             Some(is_key_available) => match *is_key_available {
                 "yes" => Ok(Some(true)),
                 "no" => Ok(Some(false)),
@@ -465,10 +481,7 @@ pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsE
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        zfs_is_dataset_mounted, zfs_is_key_loaded, zfs_list_datasets_mountpoints, zfs_load_key,
-        zfs_mount_dataset, zfs_unload_key, zfs_unmount_dataset,
-    };
+    use super::*;
 
     #[test]
     fn basic() {
@@ -513,5 +526,27 @@ mod tests {
             println!("{}", err);
             eprintln!("{}", err);
         }
+    }
+
+    #[test]
+    fn test_valid_zfs_dataset_names() {
+        let f = check_and_sanitize_zfs_dataset_name;
+
+        f("pool/dataset1").unwrap();
+        f("pool/dataset_2").unwrap();
+        f("pool.dataset/dataset-3").unwrap();
+        f("pool1/dataset.with.multiple.levels").unwrap();
+    }
+
+    #[test]
+    fn test_invalid_zfs_dataset_names() {
+        let f = check_and_sanitize_zfs_dataset_name;
+
+        f("").unwrap_err();
+        f("pool/dataset name").unwrap_err();
+        f("pool/dataset!").unwrap_err();
+        f("pool/dataset@name").unwrap_err();
+        f("pool//dataset").unwrap_err();
+        f("pool/ dataset").unwrap_err();
     }
 }
