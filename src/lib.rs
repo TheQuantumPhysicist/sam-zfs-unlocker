@@ -299,9 +299,9 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
 }
 
 /// Checks whether key is loaded
-/// Returns: Some(true) if key is available/loaded and/or doesn't need it
-/// Returns: Some(false) if key is not loaded
-/// Returns: None if the dataset is not found
+/// Returns: Some(true): Key is available/loaded and/or doesn't need it
+/// Returns: Some(false): Key is not loaded
+/// Returns: None: The dataset is not found
 /// Otherwise, an error is returned
 pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
@@ -347,7 +347,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
             .filter(|v| v.len() >= 2)
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
-        match datasets_results.get(&&*dataset) {
+        match datasets_results.get(&*dataset) {
             Some(is_key_available) => match *is_key_available {
                 "available" => Ok(Some(true)),
                 "unavailable" => Ok(Some(false)),
@@ -367,9 +367,9 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
 }
 
 /// Checks whether a dataset is mounted
-/// Returns: Some(true) if key is available/loaded and/or doesn't need it
-/// Returns: Some(false) if key is not loaded
-/// Returns: None if the dataset is not found
+/// Returns: Some(true): The dataset is mounted
+/// Returns: Some(false): The dataset is not mounted
+/// Returns: None: The dataset is not found
 /// Otherwise, an error is returned
 pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
@@ -414,7 +414,7 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
             .filter(|v| v.len() >= 2)
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
-        match datasets_results.get(&&*dataset) {
+        match datasets_results.get(&*dataset) {
             Some(is_key_available) => match *is_key_available {
                 "yes" => Ok(Some(true)),
                 "no" => Ok(Some(false)),
