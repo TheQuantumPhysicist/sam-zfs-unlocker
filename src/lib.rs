@@ -37,17 +37,28 @@ pub enum ZfsError {
     DatasetNameIsInvalid(String),
 }
 
+/// Note that the sanitization's purpose is not to perfectly mimic ZFS specs.
+/// The purpose is to prevent any kind of possible injection of commands.
 fn check_and_sanitize_zfs_dataset_name(zfs_dataset: impl AsRef<str>) -> Result<String, ZfsError> {
-    let dataset = zfs_dataset.as_ref();
+    const ALLOWED_SYMBOLS: [char; 4] = ['-', '_', '.', ':'];
 
-    if !dataset.split('/').all(|part| {
+    let dataset = zfs_dataset.as_ref().trim();
+
+    let check_func = |part: &str| {
         part.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || ALLOWED_SYMBOLS.contains(&c))
+            && part.chars().all(|c| !c.is_whitespace())
             && !part.is_empty()
-    }) {
+            && !part.starts_with(&ALLOWED_SYMBOLS) // Can only begin with an alphanumeric
+    };
+
+    // Check the whole name, then the individual parts
+    check_func(dataset);
+
+    if !dataset.split('/').all(|part| check_func(part)) {
         Err(ZfsError::DatasetNameIsInvalid(dataset.to_string()))
     } else {
-        Ok(dataset.trim().to_string())
+        Ok(dataset.to_string())
     }
 }
 
@@ -491,11 +502,14 @@ mod tests {
         let passphrase = "abcdefghijklmnop";
         let mount_point = "/SamRandomPoolEncryptedDS1";
 
-        if hostname::get().unwrap() == hostname {
+        if hostname::get().unwrap().to_string_lossy().to_lowercase() == hostname.to_lowercase() {
             // Try with a non-existent database
             assert_eq!(zfs_is_key_loaded("some_random_stuff").unwrap(), None);
 
-            // Ensure the key is unloaded, load it, then unload it
+            // Unmount, before messing with the key
+            zfs_unmount_dataset(dataset_name).unwrap();
+
+            // Ensure the key is unloaded and db is unmounted, load it, then unload it
             zfs_unload_key(dataset_name).unwrap();
             assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(false));
             zfs_load_key(dataset_name, passphrase).unwrap();
@@ -535,7 +549,10 @@ mod tests {
         f("pool/dataset1").unwrap();
         f("pool/dataset_2").unwrap();
         f("pool.dataset/dataset-3").unwrap();
-        f("pool1/dataset.with.multiple.levels").unwrap();
+        f("pool.dataset/dataset:3").unwrap();
+        f("pool:1/dataset.with.multiple.levels").unwrap();
+        f(" pool:1/dataset.with.multiple.levels").unwrap();
+        f(" pool:1/dataset.with.multiple.levels  ").unwrap();
     }
 
     #[test]
@@ -543,6 +560,22 @@ mod tests {
         let f = check_and_sanitize_zfs_dataset_name;
 
         f("").unwrap_err();
+        f("_R").unwrap_err();
+        f("-R").unwrap_err();
+        f(":R").unwrap_err();
+        f(".R").unwrap_err();
+        f(" _R").unwrap_err();
+        f(" -R").unwrap_err();
+        f(" :R").unwrap_err();
+        f(" .R").unwrap_err();
+        f("pool/_R").unwrap_err();
+        f("pool/-R").unwrap_err();
+        f("pool/:R").unwrap_err();
+        f("pool/.R").unwrap_err();
+        f("pool/ _R").unwrap_err();
+        f("pool/ -R").unwrap_err();
+        f("pool/ :R").unwrap_err();
+        f("pool/ .R").unwrap_err();
         f("pool/dataset name").unwrap_err();
         f("pool/dataset!").unwrap_err();
         f("pool/dataset@name").unwrap_err();
