@@ -11,16 +11,16 @@ pub enum ZfsError {
     SystemError(String),
     #[error("Dataset {0} not found")]
     DatasetNotFound(String),
+    #[error("Command returned unexpected state for key is available, other than 'available' and 'unavailable': {0}")]
+    UnexpectedStateForKey(String),
     #[error("Command returned unexpected state for mount, other than 'yes' and 'no': {0}")]
     UnexpectedStateForMount(String),
     #[error("Command to check whether dataset {0} is mounted failed: {1}")]
     IsMountedCheckCallFailed(String, String),
     #[error("Command to list datasets mount points failed: {0}")]
     ListDatasetsMountPointsCallFailed(String),
-    #[error(
-        "Command returned unexpected state for key-loaded, other than 'true' and 'false' and '-'"
-    )]
-    UnexpectedStateForKeyLoaded(String),
+    #[error("Command to list unmounted datasets failed: {0}")]
+    ListUnmountedDatasetsCallFailed(String),
     #[error("Command to check whether key for dataset {0} is loaded failed: {1}")]
     KeyLoadedCheckFailed(String, String),
     #[error("Load key command for dataset {0} failed: {1}")]
@@ -35,6 +35,31 @@ pub enum ZfsError {
     UnmountCmdFailed(String, String),
     #[error("Dataset name is invalid: {0}")]
     DatasetNameIsInvalid(String),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DatasetMountedState {
+    pub dataset_name: String,
+    pub is_mounted: bool,
+    pub is_key_loaded: bool,
+}
+
+fn parse_key_available_state(state: impl AsRef<str>) -> Result<bool, ZfsError> {
+    match state.as_ref().trim() {
+        "available" => Ok(true),
+        "unavailable" => Ok(false),
+        _ => Err(ZfsError::UnexpectedStateForKey(state.as_ref().to_string())),
+    }
+}
+
+fn parse_dataset_mounted_state(state: impl AsRef<str>) -> Result<bool, ZfsError> {
+    match state.as_ref().trim() {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => Err(ZfsError::UnexpectedStateForMount(
+            state.as_ref().to_string(),
+        )),
+    }
 }
 
 /// Note that the sanitization's purpose is not to perfectly mimic ZFS specs.
@@ -359,14 +384,7 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
         match datasets_results.get(&*dataset) {
-            Some(is_key_available) => match *is_key_available {
-                "available" => Ok(Some(true)),
-                "unavailable" => Ok(Some(false)),
-                "-" => Ok(Some(true)),
-                _ => Err(ZfsError::UnexpectedStateForKeyLoaded(
-                    is_key_available.to_string(),
-                )),
-            },
+            Some(is_key_available) => parse_key_available_state(is_key_available).map(Some),
             None => Ok(None),
         }
     } else {
@@ -426,11 +444,11 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
             .map(|v| (v[0], v[1]))
             .collect::<BTreeMap<&str, &str>>();
         match datasets_results.get(&*dataset) {
-            Some(is_key_available) => match *is_key_available {
+            Some(is_dataset_mounted) => match *is_dataset_mounted {
                 "yes" => Ok(Some(true)),
                 "no" => Ok(Some(false)),
                 _ => Err(ZfsError::UnexpectedStateForMount(
-                    is_key_available.to_string(),
+                    is_dataset_mounted.to_string(),
                 )),
             },
             None => Ok(None),
@@ -490,6 +508,66 @@ pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsE
     }
 }
 
+pub fn zfs_list_unmounted_datasets() -> Result<BTreeMap<String, DatasetMountedState>, ZfsError> {
+    // Create a command to run zfs load-key
+    let mut child = Command::new("zfs")
+        .arg("list")
+        .arg("-H") // No table header
+        .arg("-o")
+        .arg("name,mounted,keystatus") // Only show two columns, dataset name and mountpoint
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ZfsError::ListDatasetsMountPointsCallFailed(e.to_string()))?;
+
+    // Capture the stdout handle of the child process
+    let mut stdout = child.stdout.take().expect("Failed to capture stdout");
+    let mut stderr = child.stderr.take().expect("Failed to capture stderr");
+
+    // Read stdout/stderr to a string
+    let mut stdout_string = String::new();
+    stdout
+        .read_to_string(&mut stdout_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+    let mut stderr_string = String::new();
+    stderr
+        .read_to_string(&mut stderr_string)
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+
+    // Wait for the zfs command to complete
+    let status = child
+        .wait()
+        .map_err(|e| ZfsError::SystemError(e.to_string()))?;
+
+    // Check if the command was successful
+    if status.success() {
+        let lines = stdout_string.lines();
+        let datasets_results = lines
+            .into_iter()
+            .map(|l| l.split_whitespace().collect::<Vec<_>>())
+            .filter(|v| v.len() >= 3)
+            .filter(|v| v[2].trim() != "-") // Filter unencrypted datasets
+            .map(|v| {
+                let dataset_name = v[0].to_string();
+                let is_mounted = parse_dataset_mounted_state(v[1])?;
+                let is_key_loaded = parse_key_available_state(v[2])?;
+                Ok((
+                    dataset_name.clone(),
+                    DatasetMountedState {
+                        dataset_name,
+                        is_mounted,
+                        is_key_loaded,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<String, DatasetMountedState>, _>>()?;
+        Ok(datasets_results)
+    } else {
+        Err(ZfsError::ListUnmountedDatasetsCallFailed(stderr_string))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,7 +576,7 @@ mod tests {
     fn basic() {
         // Feel free to update these entries to your machine's entries to test
         let hostname = "pitests";
-        let dataset_name = "SamRandomPool/EncryptedDataset1";
+        let ds_name = "SamRandomPool/EncryptedDataset1";
         let passphrase = "abcdefghijklmnop";
         let mount_point = "/SamRandomPoolEncryptedDS1";
 
@@ -507,32 +585,88 @@ mod tests {
             assert_eq!(zfs_is_key_loaded("some_random_stuff").unwrap(), None);
 
             // Unmount, before messing with the key
-            zfs_unmount_dataset(dataset_name).unwrap();
+            zfs_unmount_dataset(ds_name).unwrap();
 
             // Ensure the key is unloaded and db is unmounted, load it, then unload it
-            zfs_unload_key(dataset_name).unwrap();
-            assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(false));
-            zfs_load_key(dataset_name, passphrase).unwrap();
-            assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(true));
-            zfs_unload_key(dataset_name).unwrap();
-            assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(false));
+            zfs_unload_key(ds_name).unwrap();
+            assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(false));
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_key_loaded,
+                false
+            );
+            zfs_load_key(ds_name, passphrase).unwrap();
+            assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(true));
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_key_loaded,
+                true
+            );
+            zfs_unload_key(ds_name).unwrap();
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_key_loaded,
+                false
+            );
+            assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(false));
 
-            zfs_load_key(dataset_name, passphrase).unwrap();
-            assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(true));
+            zfs_load_key(ds_name, passphrase).unwrap();
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_key_loaded,
+                true
+            );
+            assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(true));
 
-            zfs_unmount_dataset(dataset_name).unwrap();
-            assert_eq!(zfs_is_dataset_mounted(dataset_name).unwrap(), Some(false));
-            zfs_mount_dataset(dataset_name).unwrap();
-            assert_eq!(zfs_is_dataset_mounted(dataset_name).unwrap(), Some(true));
-            zfs_unmount_dataset(dataset_name).unwrap();
-            assert_eq!(zfs_is_dataset_mounted(dataset_name).unwrap(), Some(false));
+            zfs_unmount_dataset(ds_name).unwrap();
+            assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(false));
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_mounted,
+                false
+            );
+            zfs_mount_dataset(ds_name).unwrap();
+            assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(true));
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_mounted,
+                true
+            );
+            zfs_unmount_dataset(ds_name).unwrap();
+            assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(false));
+            assert_eq!(
+                zfs_list_unmounted_datasets()
+                    .unwrap()
+                    .get(ds_name)
+                    .unwrap()
+                    .is_mounted,
+                false
+            );
 
-            zfs_unload_key(dataset_name).unwrap();
-            assert_eq!(zfs_is_key_loaded(dataset_name).unwrap(), Some(false));
+            zfs_unload_key(ds_name).unwrap();
+            assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(false));
 
             let mount_points = zfs_list_datasets_mountpoints().unwrap();
             assert_eq!(
-                mount_points.get(dataset_name).unwrap().to_string_lossy(),
+                mount_points.get(ds_name).unwrap().to_string_lossy(),
                 mount_point,
             );
         } else {
@@ -581,5 +715,41 @@ mod tests {
         f("pool/dataset@name").unwrap_err();
         f("pool//dataset").unwrap_err();
         f("pool/ dataset").unwrap_err();
+    }
+
+    #[test]
+    fn key_loaded_state() {
+        assert_eq!(parse_key_available_state("available").unwrap(), true);
+        assert_eq!(parse_key_available_state("unavailable").unwrap(), false);
+        assert_eq!(parse_key_available_state(" available").unwrap(), true);
+        assert_eq!(parse_key_available_state(" unavailable").unwrap(), false);
+        assert_eq!(parse_key_available_state("available ").unwrap(), true);
+        assert_eq!(parse_key_available_state("unavailable ").unwrap(), false);
+        assert_eq!(parse_key_available_state(" available ").unwrap(), true);
+        assert_eq!(parse_key_available_state(" unavailable ").unwrap(), false);
+
+        parse_key_available_state("yes").unwrap_err();
+        parse_key_available_state("no").unwrap_err();
+        parse_key_available_state(" ").unwrap_err();
+        parse_key_available_state(".").unwrap_err();
+        parse_key_available_state("2222").unwrap_err();
+    }
+
+    #[test]
+    fn is_mounted_state() {
+        assert_eq!(parse_dataset_mounted_state("yes").unwrap(), true);
+        assert_eq!(parse_dataset_mounted_state("no").unwrap(), false);
+        assert_eq!(parse_dataset_mounted_state(" yes").unwrap(), true);
+        assert_eq!(parse_dataset_mounted_state(" no").unwrap(), false);
+        assert_eq!(parse_dataset_mounted_state("yes ").unwrap(), true);
+        assert_eq!(parse_dataset_mounted_state("no ").unwrap(), false);
+        assert_eq!(parse_dataset_mounted_state(" yes ").unwrap(), true);
+        assert_eq!(parse_dataset_mounted_state(" no ").unwrap(), false);
+
+        parse_dataset_mounted_state("available").unwrap_err();
+        parse_dataset_mounted_state("unavailable").unwrap_err();
+        parse_dataset_mounted_state(" ").unwrap_err();
+        parse_dataset_mounted_state(".").unwrap_err();
+        parse_dataset_mounted_state("2222").unwrap_err();
     }
 }
