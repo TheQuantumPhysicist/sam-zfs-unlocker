@@ -508,7 +508,7 @@ pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsE
     }
 }
 
-pub fn zfs_list_unmounted_datasets() -> Result<BTreeMap<String, DatasetMountedState>, ZfsError> {
+pub fn zfs_list_encrypted_datasets() -> Result<BTreeMap<String, DatasetMountedState>, ZfsError> {
     // Create a command to run zfs load-key
     let mut child = Command::new("zfs")
         .arg("list")
@@ -591,7 +591,7 @@ mod tests {
             zfs_unload_key(ds_name).unwrap();
             assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(false));
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -601,7 +601,7 @@ mod tests {
             zfs_load_key(ds_name, passphrase).unwrap();
             assert_eq!(zfs_is_key_loaded(ds_name).unwrap(), Some(true));
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -610,7 +610,7 @@ mod tests {
             );
             zfs_unload_key(ds_name).unwrap();
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -621,7 +621,7 @@ mod tests {
 
             zfs_load_key(ds_name, passphrase).unwrap();
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -633,7 +633,7 @@ mod tests {
             zfs_unmount_dataset(ds_name).unwrap();
             assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(false));
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -643,7 +643,7 @@ mod tests {
             zfs_mount_dataset(ds_name).unwrap();
             assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(true));
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
@@ -653,7 +653,7 @@ mod tests {
             zfs_unmount_dataset(ds_name).unwrap();
             assert_eq!(zfs_is_dataset_mounted(ds_name).unwrap(), Some(false));
             assert_eq!(
-                zfs_list_unmounted_datasets()
+                zfs_list_encrypted_datasets()
                     .unwrap()
                     .get(ds_name)
                     .unwrap()
