@@ -119,7 +119,7 @@ pub fn zfs_load_key(
         .map_err(|e| ZfsError::LoadKeyCmdFailed(dataset.to_string(), e.to_string()))?;
 
     // Get the stdin of the zfs command
-    if let Some(mut stdin) = child.stdin.as_mut() {
+    if let Some(mut stdin) = child.stdin.take() {
         // Write the key to stdin
         let mut writer = BufWriter::new(&mut stdin);
         writeln!(writer, "{}", passphrase).map_err(|e| ZfsError::SystemError(e.to_string()))?;
