@@ -11,7 +11,9 @@ pub enum ZfsError {
     SystemError(String),
     #[error("Dataset {0} not found")]
     DatasetNotFound(String),
-    #[error("Command returned unexpected state for key is available, other than 'available' and 'unavailable': {0}")]
+    #[error(
+        "Command returned unexpected state for key is available, other than 'available' and 'unavailable': {0}"
+    )]
     UnexpectedStateForKey(String),
     #[error("Command returned unexpected state for mount, other than 'yes' and 'no': {0}")]
     UnexpectedStateForMount(String),
@@ -74,13 +76,13 @@ fn check_and_sanitize_zfs_dataset_name(zfs_dataset: impl AsRef<str>) -> Result<S
             .all(|c| c.is_ascii_alphanumeric() || ALLOWED_SYMBOLS.contains(&c))
             && part.chars().all(|c| !c.is_whitespace())
             && !part.is_empty()
-            && !part.starts_with(&ALLOWED_SYMBOLS) // Can only begin with an alphanumeric
+            && !part.starts_with(ALLOWED_SYMBOLS) // Can only begin with an alphanumeric
     };
 
     // Check the whole name, then the individual parts
     check_func(dataset);
 
-    if !dataset.split('/').all(|part| check_func(part)) {
+    if !dataset.split('/').all(check_func) {
         Err(ZfsError::DatasetNameIsInvalid(dataset.to_string()))
     } else {
         Ok(dataset.to_string())
@@ -99,10 +101,11 @@ pub fn zfs_load_key(
     let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
     match zfs_is_key_loaded(&dataset)? {
-        Some(loaded) => match loaded {
-            true => return Ok(()),
-            false => (),
-        },
+        Some(loaded) => {
+            if loaded {
+                return Ok(());
+            }
+        }
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
@@ -231,10 +234,11 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
     }
 
     match zfs_is_dataset_mounted(&dataset)? {
-        Some(mounted) => match mounted {
-            true => return Ok(()),
-            false => (),
-        },
+        Some(mounted) => {
+            if mounted {
+                return Ok(());
+            }
+        }
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
