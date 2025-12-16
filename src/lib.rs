@@ -1,3 +1,6 @@
+mod zfs_finder;
+
+use crate::zfs_finder::pick_zfs_path_for_sudo;
 use std::collections::BTreeMap;
 use std::io::BufWriter;
 use std::io::Read;
@@ -37,6 +40,14 @@ pub enum ZfsError {
     UnmountCmdFailed(String, String),
     #[error("Dataset name is invalid: {0}")]
     DatasetNameIsInvalid(String),
+    #[error("Failed to enumerate executable paths for {0}: {1}")]
+    WhichAllFailed(String, String),
+    #[error("Failed to run `sudo -n -l`: {0}")]
+    SudoListFailed(String),
+    #[error("No matching NOPASSWD sudoers rule for: {0}")]
+    SudoersNoMatchingRule(String),
+    #[error("No `zfs` executable found in PATH")]
+    ZfsNotFoundInPath,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -109,10 +120,12 @@ pub fn zfs_load_key(
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
     let mut child = Command::new("sudo")
         .arg("-n") // sudo isn't interactive
-        .arg("zfs")
+        .arg(zfs_exe)
         .arg("load-key")
         .arg(&dataset)
         .stdin(std::process::Stdio::piped())
@@ -176,10 +189,12 @@ pub fn zfs_unload_key(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
     let mut child = Command::new("sudo")
         .arg("-n") // sudo isn't interactive
-        .arg("zfs")
+        .arg(zfs_exe)
         .arg("unload-key")
         .arg(&dataset)
         .stdin(std::process::Stdio::piped())
@@ -242,10 +257,12 @@ pub fn zfs_mount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError> {
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
     let mut child = Command::new("sudo")
         .arg("-n") // sudo isn't interactive
-        .arg("zfs")
+        .arg(zfs_exe)
         .arg("mount")
         .arg(&dataset)
         .stdin(std::process::Stdio::piped())
@@ -296,10 +313,12 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
         None => return Err(ZfsError::DatasetNotFound(dataset.to_string())),
     }
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
     let mut child = Command::new("sudo")
         .arg("-n") // sudo isn't interactive
-        .arg("zfs")
+        .arg(zfs_exe)
         .arg("umount")
         .arg(&dataset)
         .stdin(std::process::Stdio::piped())
@@ -346,8 +365,10 @@ pub fn zfs_unmount_dataset(zfs_dataset: impl AsRef<str>) -> Result<(), ZfsError>
 pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
-    let mut child = Command::new("zfs")
+    let mut child = Command::new(zfs_exe)
         .arg("get")
         .arg("keystatus")
         .arg("-H") // No table header
@@ -407,8 +428,10 @@ pub fn zfs_is_key_loaded(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, Z
 pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<bool>, ZfsError> {
     let dataset = check_and_sanitize_zfs_dataset_name(zfs_dataset)?;
 
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
-    let mut child = Command::new("zfs")
+    let mut child = Command::new(zfs_exe)
         .arg("list")
         .arg("-H") // No table header
         .arg("-o")
@@ -466,8 +489,10 @@ pub fn zfs_is_dataset_mounted(zfs_dataset: impl AsRef<str>) -> Result<Option<boo
 }
 
 pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsError> {
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
-    let mut child = Command::new("zfs")
+    let mut child = Command::new(zfs_exe)
         .arg("list")
         .arg("-H") // No table header
         .arg("-o")
@@ -513,8 +538,10 @@ pub fn zfs_list_datasets_mountpoints() -> Result<BTreeMap<String, PathBuf>, ZfsE
 }
 
 pub fn zfs_list_encrypted_datasets() -> Result<BTreeMap<String, DatasetMountedState>, ZfsError> {
+    let zfs_exe = pick_zfs_path_for_sudo()?;
+
     // Create a command to run zfs load-key
-    let mut child = Command::new("zfs")
+    let mut child = Command::new(zfs_exe)
         .arg("list")
         .arg("-H") // No table header
         .arg("-o")
@@ -579,7 +606,7 @@ mod tests {
     #[test]
     fn basic() {
         // Feel free to update these entries to your machine's entries to test
-        let hostname = "pitests";
+        let hostname = "ZFSAutomountTester";
         let ds_name = "SamRandomPool/EncryptedDataset1";
         let passphrase = "abcdefghijklmnop";
         let mount_point = "/SamRandomPoolEncryptedDS1";

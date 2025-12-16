@@ -2,8 +2,10 @@
     "editor.formatOnSave": true,
     "cSpell.words": [
         "abcdefghijklmnop",
+        "Automount",
         "keystatus",
         "mountpoint",
+        "NOPASSWD",
         "pitests",
         "unlocker"
     ],
